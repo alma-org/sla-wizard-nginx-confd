@@ -140,7 +140,7 @@ map $http_apikey $api_client_name {
 location /sla-user_plan_endpoint_METHOD {
     rewrite /sla-user_plan_endpoint_METHOD $uri_original break;
     proxy_pass http://localhost:8000;
-    limit_req zone=sla-user_plan_endpoint_METHOD burst=1 nodelay;
+    limit_req zone=sla-user_plan_endpoint_METHOD burst=4 nodelay;
 }
 ```
 
