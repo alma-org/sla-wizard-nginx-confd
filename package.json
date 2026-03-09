@@ -14,12 +14,12 @@
         "commander": "^9.0.0",
         "js-yaml": "^4.1.0",
         "jsonschema": "^1.4.0",
-        "sla-wizard": "^1.1.0",
         "validator": "^13.7.0",
         "winston": "^3.6.0"
     },
     "devDependencies": {
         "chai": "^4.3.6",
+        "sla-wizard": "^1.1.0",
         "eslint": "^8.42.0",
         "mocha": "^10.0.0"
     }
