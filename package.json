@@ -10,11 +10,11 @@
     "author": "Daniel Galván Cancio",
     "license": "ISC",
     "dependencies": {
-        "sla-wizard": "file:../../",
         "axios": "^0.26.1",
         "commander": "^9.0.0",
         "js-yaml": "^4.1.0",
         "jsonschema": "^1.4.0",
+        "sla-wizard": "^1.1.0",
         "validator": "^13.7.0",
         "winston": "^3.6.0"
     },
