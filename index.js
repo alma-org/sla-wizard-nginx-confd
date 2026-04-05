@@ -287,7 +287,7 @@ function splitNginxConfig(fullConfig, outDir, skipMainConfig = false) {
     }
 
     // Track location blocks
-    if (trimmedLine.startsWith("location /sla-")) {
+    if (trimmedLine.startsWith("location /") && !trimmedLine.startsWith("location ~/")) {
       inLocationBlock = true;
       currentBlock = [line];
       // Extract the location name for grouping
@@ -443,10 +443,10 @@ function extractUserKey(locationName, limitReqZones) {
   }
 
   // Fallback: extract from location name pattern
-  // Format: sla-<context_id>_<plan>_...
-  const match = locationName.match(/^sla-([^_]+)_([^_]+)_/);
+  // Format: <context_id>_<plan>_...
+  const match = locationName.match(/^([^_]+)_([^_]+)_/);
   if (match) {
-    return `sla-${match[1]}_${match[2]}`;
+    return `${match[1]}_${match[2]}`;
   }
 
   return locationName;
@@ -456,8 +456,8 @@ function extractUserKey(locationName, limitReqZones) {
  * Extract user key from zone name
  */
 function extractUserKeyFromZone(zoneName) {
-  // Format: sla-<context_id>_<plan>_<endpoint>_<method>
-  const match = zoneName.match(/^(sla-[^_]+_[^_]+)_/);
+  // Format: <context_id>_<plan>_<endpoint>_<method>
+  const match = zoneName.match(/^([^_]+_[^_]+)_/);
   return match ? match[1] : zoneName;
 }
 
@@ -465,8 +465,8 @@ function extractUserKeyFromZone(zoneName) {
  * Extract user key from map identifier
  */
 function extractUserKeyFromIdentifier(identifier) {
-  // Format: sla-context_id_plan
-  const match = identifier.match(/^(sla-[^_]+_[^_]+)/);
+  // Format: context_id_plan
+  const match = identifier.match(/^([^_]+_[^_]+)/);
   return match ? match[1] : identifier;
 }
 
