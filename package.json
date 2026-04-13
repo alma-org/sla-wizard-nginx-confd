@@ -1,6 +1,6 @@
 {
     "name": "sla-wizard-nginx-confd",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "description": "Plugin for SLA Wizard to generate Nginx-Confd configuration files.",
     "main": "index.js",
     "scripts": {

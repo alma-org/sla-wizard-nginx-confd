@@ -210,6 +210,9 @@ function removeFromConfd(options, ctx) {
       fs.unlinkSync(userConfigFile);
       console.log(`  - Deleted: conf.d/${userKey}.conf`);
       deletedCount++;
+      // Also remove the user's http-level directives from nginx.conf
+      const mainConfigFile = path.join(options.outDir, "nginx.conf");
+      updateNginxConfRemoveUser(userKey, mainConfigFile);
     } else {
       console.log(`  - Not found: conf.d/${userKey}.conf`);
     }
@@ -344,6 +347,10 @@ function splitNginxConfig(fullConfig, outDir, skipMainConfig = false) {
     // Write main config
     const mainConfigFile = path.join(outDir, "nginx.conf");
     fs.writeFileSync(mainConfigFile, mainConfigContent);
+  } else {
+    // add-to-confd: inject the new user's http-level directives into existing nginx.conf
+    const mainConfigFile = path.join(outDir, "nginx.conf");
+    updateNginxConfAddUser(fullConfig, mainConfigFile);
   }
 }
 
@@ -357,6 +364,97 @@ function extractUserKey(locationName) {
     return `${match[1]}_${match[2]}`;
   }
   return locationName;
+}
+
+/**
+ * Updates an existing nginx.conf to inject a new user's http-level directives
+ * (limit_req_zone lines and map entries) extracted from a freshly generated full config.
+ * Called by add-to-confd so the new user's rate-limit zones exist in nginx.conf.
+ */
+function updateNginxConfAddUser(fullConfig, nginxConfPath) {
+  if (!fs.existsSync(nginxConfPath)) return;
+
+  const lines = fullConfig.split("\n");
+  const newLimitReqZones = [];
+  const newMapEntries = [];
+  let inMapBlock = false;
+  let braceCount = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("limit_req_zone")) {
+      newLimitReqZones.push(trimmed);
+      continue;
+    }
+    if (trimmed.startsWith("map $")) {
+      inMapBlock = true;
+      braceCount = (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+      continue;
+    }
+    if (inMapBlock) {
+      braceCount += (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+      if (braceCount === 0) { inMapBlock = false; continue; }
+      if (trimmed && !trimmed.startsWith("default")) {
+        newMapEntries.push(trimmed);
+      }
+    }
+  }
+
+  let conf = fs.readFileSync(nginxConfPath, "utf8");
+
+  // Inject new limit_req_zone lines before the limit_req_status directive
+  if (newLimitReqZones.length > 0) {
+    const injection = newLimitReqZones.map((z) => "    " + z).join("\n") + "\n";
+    conf = conf.replace(/(\s*limit_req_status\s+429;)/, "\n" + injection + "$1");
+  }
+
+  // Inject new map entries inside the existing map block (before its closing })
+  if (newMapEntries.length > 0) {
+    const mapHeaderIdx = conf.indexOf("map $");
+    if (mapHeaderIdx !== -1) {
+      let depth = 0;
+      let closeIdx = -1;
+      for (let i = mapHeaderIdx; i < conf.length; i++) {
+        if (conf[i] === "{") depth++;
+        else if (conf[i] === "}" && --depth === 0) { closeIdx = i; break; }
+      }
+      if (closeIdx !== -1) {
+        const injection = newMapEntries.map((e) => "     " + e).join("\n") + "\n";
+        conf = conf.slice(0, closeIdx) + injection + conf.slice(closeIdx);
+      }
+    }
+  }
+
+  fs.writeFileSync(nginxConfPath, conf, "utf8");
+}
+
+/**
+ * Updates an existing nginx.conf to remove a user's http-level directives
+ * (limit_req_zone lines and map entry) when that user is deleted from conf.d.
+ */
+function updateNginxConfRemoveUser(userKey, nginxConfPath) {
+  if (!fs.existsSync(nginxConfPath)) return;
+
+  let conf = fs.readFileSync(nginxConfPath, "utf8");
+
+  // Remove limit_req_zone lines whose zone name starts with <userKey>_
+  conf = conf.replace(
+    new RegExp(`[^\\n]*limit_req_zone[^\\n]+zone=${escapeRegex(userKey)}_[^\\n]*\\n?`, "g"),
+    ""
+  );
+
+  // Remove the map entry for this user: lines of the form "~(...)" "userKey";
+  conf = conf.replace(
+    new RegExp(`[^\\n]*"~\\([^)]+\\)"\\s+"${escapeRegex(userKey)}";[^\\n]*\\n?`, "g"),
+    ""
+  );
+
+  fs.writeFileSync(nginxConfPath, conf, "utf8");
+}
+
+/** Escapes special regex characters in a string. */
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 module.exports = { apply, configNginxConfd, addToConfd, removeFromConfd };
