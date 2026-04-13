@@ -4,8 +4,8 @@ const path = require("path");
 
 /**
  * Plugin that generates nginx configuration split into:
- * - Main nginx.conf with server block structure
- * - Individual conf.d/<user>.conf files with limit_req_zone, map, and location blocks
+ * - Main nginx.conf with server block structure (includes http-level directives)
+ * - Individual conf.d/<user>.conf files with location blocks only
  *
  * @param {Object} program - Commander program instance
  * @param {Object} ctx - Context with utils and generate functions
@@ -238,53 +238,23 @@ function splitNginxConfig(fullConfig, outDir, skipMainConfig = false) {
     fs.mkdirSync(confDDir, { recursive: true });
   }
 
-  // Parse the configuration
+  // Parse the configuration.
+  // limit_req_zone and map are http-context directives — they must stay in
+  // nginx.conf (mainConfig). Only location blocks go into conf.d files, which
+  // are included inside the server block.
   const lines = fullConfig.split("\n");
 
-  // Extract components
-  const limitReqZones = [];
-  const mapBlocks = [];
   const locationBlocks = [];
   let mainConfig = [];
 
-  let inMapBlock = false;
   let inLocationBlock = false;
   let currentBlock = [];
   let currentBlockName = "";
-  let mapBlockContent = [];
   let braceCount = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmedLine = line.trim();
-
-    // Extract limit_req_zone lines
-    if (trimmedLine.startsWith("limit_req_zone")) {
-      limitReqZones.push(line);
-      continue;
-    }
-
-    // Track map blocks
-    if (trimmedLine.startsWith("map $")) {
-      inMapBlock = true;
-      mapBlockContent = [line];
-      braceCount =
-        (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
-      continue;
-    }
-
-    if (inMapBlock) {
-      mapBlockContent.push(line);
-      braceCount +=
-        (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
-
-      if (braceCount === 0) {
-        mapBlocks.push(mapBlockContent.join("\n"));
-        inMapBlock = false;
-        mapBlockContent = [];
-      }
-      continue;
-    }
 
     // Track location blocks
     if (trimmedLine.startsWith("location /") && !trimmedLine.startsWith("location ~/")) {
@@ -324,17 +294,13 @@ function splitNginxConfig(fullConfig, outDir, skipMainConfig = false) {
 
   locationBlocks.forEach((block) => {
     // Extract user identifier from location name
-    // Format: sla-<context_id>_<plan>_<endpoint>_<method>
+    // Format: <context_id>_<plan>_<endpoint>_<method>
     const parts = block.name.split("_");
     if (parts.length >= 2) {
-      // Find where the context_id ends and plan begins
-      // We need to reconstruct the user key from the location name
-      const userKey = extractUserKey(block.name, limitReqZones);
+      const userKey = extractUserKey(block.name);
 
       if (!userGroups[userKey]) {
         userGroups[userKey] = {
-          limitReqZones: [],
-          mapEntries: [],
           locations: [],
         };
       }
@@ -343,59 +309,10 @@ function splitNginxConfig(fullConfig, outDir, skipMainConfig = false) {
     }
   });
 
-  limitReqZones.forEach((zone) => {
-    const zoneName = zone.match(/zone=([^:]+)/);
-    if (zoneName) {
-      const userKey = extractUserKeyFromZone(zoneName[1]);
-      if (userGroups[userKey]) {
-        userGroups[userKey].limitReqZones.push(zone);
-      }
-    }
-  });
-
-  if (mapBlocks.length > 0) {
-    const mapContent = mapBlocks[0];
-    const mapLines = mapContent.split("\n");
-
-    mapLines.forEach((line) => {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('"~(') && trimmed.includes(")")) {
-        // Extract the user identifier from the map entry
-        // Format: "~(apikey)" "sla-context_id_plan";
-        const match = trimmed.match(/"([^"]+)"\s*;/);
-        if (match) {
-          const userIdentifier = match[1];
-          const userKey = extractUserKeyFromIdentifier(userIdentifier);
-
-          if (userGroups[userKey]) {
-            userGroups[userKey].mapEntries.push(line);
-          }
-        }
-      }
-    });
-  }
-
-  // Generate conf.d files for each user
+  // Generate conf.d files for each user — only location blocks (server context)
   Object.keys(userGroups).forEach((userKey) => {
     const group = userGroups[userKey];
     let userConfig = "";
-
-    // Add limit_req_zones
-    if (group.limitReqZones.length > 0) {
-      userConfig += "# Rate limiting zones\n";
-      userConfig +=
-        group.limitReqZones.map((line) => line.trim()).join("\n") + "\n\n";
-    }
-
-    // Add map block
-    if (group.mapEntries.length > 0) {
-      userConfig += "# API key mapping\n";
-      userConfig += "map $http_apikey $api_client_name {\n";
-      userConfig += '    default "";\n';
-      userConfig +=
-        group.mapEntries.map((line) => "   " + line.trim()).join("\n") + "\n";
-      userConfig += "}\n\n";
-    }
 
     // Add location blocks
     if (group.locations.length > 0) {
@@ -432,42 +349,14 @@ function splitNginxConfig(fullConfig, outDir, skipMainConfig = false) {
 
 /**
  * Extract user key from location name
+ * Format: <context_id>_<plan>_<endpoint>_<method>
  */
-function extractUserKey(locationName, limitReqZones) {
-  // Try to match with limit_req_zones to find the exact user key
-  for (const zone of limitReqZones) {
-    const zoneName = zone.match(/zone=([^:]+)/);
-    if (zoneName && locationName.includes(zoneName[1])) {
-      return extractUserKeyFromZone(zoneName[1]);
-    }
-  }
-
-  // Fallback: extract from location name pattern
-  // Format: <context_id>_<plan>_...
+function extractUserKey(locationName) {
   const match = locationName.match(/^([^_]+)_([^_]+)_/);
   if (match) {
     return `${match[1]}_${match[2]}`;
   }
-
   return locationName;
-}
-
-/**
- * Extract user key from zone name
- */
-function extractUserKeyFromZone(zoneName) {
-  // Format: <context_id>_<plan>_<endpoint>_<method>
-  const match = zoneName.match(/^([^_]+_[^_]+)_/);
-  return match ? match[1] : zoneName;
-}
-
-/**
- * Extract user key from map identifier
- */
-function extractUserKeyFromIdentifier(identifier) {
-  // Format: context_id_plan
-  const match = identifier.match(/^([^_]+_[^_]+)/);
-  return match ? match[1] : identifier;
 }
 
 module.exports = { apply, configNginxConfd, addToConfd, removeFromConfd };
