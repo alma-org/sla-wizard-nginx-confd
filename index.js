@@ -426,6 +426,52 @@ function updateNginxConfAddUser(fullConfig, nginxConfPath) {
   }
 
   fs.writeFileSync(nginxConfPath, conf, "utf8");
+
+  // --- Upgrade ratelimiting-less rewrites to rate-limited ---
+  // When a new SLA introduces an endpoint that was previously "ratelimiting-less"
+  // (present in OAS but absent from all SLAs during the last full regen), the
+  // server-level if/rewrite block in nginx.conf is missing the ${api_client_name}_
+  // prefix and a stray `location ~` fallback exists. Both must be patched so
+  // requests are routed to the correct per-client conf.d location.
+  const rateLimitedEndpoints = [];
+  // Match rate-limited rewrites in the new full config:
+  //   rewrite /... "/${api_client_name}_SANITIZED_${request_method}" break;
+  const rateLimitedRe =
+    /rewrite\s+\S+\s+"\/\$\{api_client_name\}_([A-Za-z0-9-]+)_\$\{request_method\}"/g;
+  let rm;
+  while ((rm = rateLimitedRe.exec(fullConfig)) !== null) {
+    if (!rateLimitedEndpoints.includes(rm[1])) rateLimitedEndpoints.push(rm[1]);
+  }
+
+  if (rateLimitedEndpoints.length > 0) {
+    conf = fs.readFileSync(nginxConfPath, "utf8");
+    for (const sanitized of rateLimitedEndpoints) {
+      const esc = sanitized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      // Replace ratelimiting-less rewrite (no ${api_client_name}_ prefix) with
+      // the rate-limited version.  The negative-lookahead skips lines that are
+      // already correct so the replacement is idempotent.
+      conf = conf.replace(
+        new RegExp(
+          `(rewrite\\s+\\S+\\s+)"\\/${esc}_\\$\\{request_method\\}"(\\s+break;)`,
+          "g"
+        ),
+        `$1"/\${api_client_name}_${sanitized}_\${request_method}"$2`
+      );
+
+      // Remove the stray `location ~ /SANITIZED_(...)` fallback block.
+      // These blocks proxy $uri_original (the un-stripped path) and cause 404s
+      // once a proper per-client conf.d location exists.
+      conf = conf.replace(
+        new RegExp(
+          `\\n?[ \\t]*location\\s+~\\s+\\/${esc}_\\([^)]+\\)\\s*\\{[^}]*\\}`,
+          "gs"
+        ),
+        ""
+      );
+    }
+    fs.writeFileSync(nginxConfPath, conf, "utf8");
+  }
 }
 
 /**
